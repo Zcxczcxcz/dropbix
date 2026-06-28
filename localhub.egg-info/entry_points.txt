@@ -1,0 +1,2 @@
+[console_scripts]
+localhub = localhub.__main__:main

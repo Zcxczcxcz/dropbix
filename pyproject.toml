@@ -1,0 +1,27 @@
+[project]
+name = "localhub"
+version = "0.1.0"
+description = "Local-first collaborative workspace for LAN-connected computers"
+authors = [{name = "LocalHub Team", email = "team@localhub.local"}]
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+  "fastapi>=0.118",
+  "uvicorn[standard]>=0.23",
+  "PySide6>=6.9",
+  "python-multipart>=0.0.6",
+  "watchdog>=3.0",
+  "cryptography>=41.0",
+  "httpx>=0.28"
+]
+
+[project.scripts]
+localhub = "localhub.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["localhub*"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
