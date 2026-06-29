@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import socket
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from .auth import IdentityManager
-from .config import ensure_directories, WORKSPACE_DIR
+from .config import ensure_directories, WORKSPACE_DIR, HTTP_PORT
 from .db import Database
 from .storage import StorageManager
 from .versioning import VersionManager
@@ -18,6 +19,7 @@ from .settings import LocalHubSettings
 from .notifications import NotificationManager
 from .sync import SyncManager
 from .device_manager import DeviceManager
+from .network import DeviceDiscovery
 
 app = FastAPI(title="LocalHub API")
 app.add_middleware(
@@ -39,12 +41,31 @@ sync_manager = SyncManager(db=db, storage=storage, version_manager=version_manag
 identity = IdentityManager(db=db)
 device_manager = DeviceManager(db=db, identity=identity)
 
+discovery = DeviceDiscovery(
+    identity=identity,
+    on_device_found=device_manager.register_discovered_device,
+)
+
 clients: list[WebSocket] = []
+
+
+def _device_display_name() -> str:
+    return settings.device_name or socket.gethostname()
 
 
 @app.on_event("startup")
 def on_startup() -> None:
     storage.ensure_workspace()
+    discovery.set_device_name(_device_display_name())
+    discovery.start()
+    if settings.auto_sync:
+        sync_manager.start()
+
+
+@app.on_event("shutdown")
+def on_shutdown() -> None:
+    discovery.stop()
+    sync_manager.stop()
 
 
 @app.get("/status")
@@ -53,7 +74,12 @@ def status() -> dict[str, Any]:
         "app": "LocalHub",
         "role": settings.role,
         "device_id": identity.device_id(),
-        "trusted_devices": settings.trusted_devices,
+        "device_name": _device_display_name(),
+        "hostname": socket.gethostname(),
+        "public_key": identity.public_key_pem(),
+        "http_port": HTTP_PORT,
+        "trusted_devices": device_manager.get_trusted_device_ids(),
+        "scanning": discovery.scanning,
     }
 
 
@@ -128,6 +154,8 @@ def delete_file(path: str) -> dict[str, Any]:
     if result is None:
         raise HTTPException(status_code=404, detail="Файл не найден")
     db.set_file_deleted(path, True)
+    if path in settings.favorites:
+        settings.remove_favorite(path)
     archive_manager.archive_event("file_deleted", f"Файл перемещён в корзину: {path}", details=path)
     return {"status": "moved_to_trash", "path": path}
 
@@ -157,12 +185,19 @@ def receive_proposal(path: str = Form(...), comment: str = Form(""), sender_devi
 
 @app.get("/archive")
 def archive() -> dict[str, Any]:
-    return {"archive": archive_manager.list_archive_files()}
+    events = archive_manager.list_events()
+    formatted = [
+        f"[{event['timestamp']}] {event['event_type']}: {event['description']}"
+        for event in events
+    ]
+    return {"archive": formatted, "events": events}
 
 
 @app.post("/sync/manual")
 def sync_manual() -> dict[str, str]:
     sync_manager.manual_sync()
+    settings.last_sync = __import__("datetime").datetime.utcnow().isoformat()
+    settings.save()
     return {"status": "sync_started"}
 
 
@@ -171,18 +206,113 @@ def devices() -> dict[str, Any]:
     return {"devices": device_manager.list_devices()}
 
 
+@app.post("/devices/scan")
+def scan_devices() -> dict[str, Any]:
+    discovery.trigger_scan()
+    return {"status": "scanning", "scanning": True}
+
+
+@app.get("/devices/scan/status")
+def scan_status() -> dict[str, Any]:
+    return {
+        "scanning": discovery.scanning,
+        "last_scan_at": discovery.last_scan_at,
+    }
+
+
+@app.post("/devices/add")
+def add_device(ip: str, name: str = "") -> dict[str, Any]:
+    try:
+        info = device_manager.add_device_by_ip(ip=ip, name=name or None)
+        archive_manager.archive_event("device_added", f"Устройство добавлено: {info.get('name', ip)}", details=ip)
+        return {"status": "added", "device": info}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/devices/{device_id}")
+def remove_device(device_id: str) -> dict[str, Any]:
+    try:
+        device_manager.remove_device(device_id)
+        archive_manager.archive_event("device_removed", f"Устройство удалено: {device_id}", details=device_id)
+        return {"status": "removed", "device_id": device_id}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/devices/trust")
 def trust_device(device_id: str) -> dict[str, Any]:
-    device_manager.trust_device(device_id)
-    archive_manager.archive_event("device_trusted", f"Устройство доверено: {device_id}", details=device_id)
-    return {"status": "trusted", "device_id": device_id}
+    try:
+        device_manager.trust_device(device_id)
+        archive_manager.archive_event("device_trusted", f"Устройство доверено: {device_id}", details=device_id)
+        return {"status": "trusted", "device_id": device_id}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/devices/untrust")
 def untrust_device(device_id: str) -> dict[str, Any]:
-    device_manager.untrust_device(device_id)
-    archive_manager.archive_event("device_untrusted", f"Устройство больше не доверено: {device_id}", details=device_id)
-    return {"status": "untrusted", "device_id": device_id}
+    try:
+        device_manager.untrust_device(device_id)
+        archive_manager.archive_event("device_untrusted", f"Устройство больше не доверено: {device_id}", details=device_id)
+        return {"status": "untrusted", "device_id": device_id}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/settings")
+def get_settings() -> dict[str, Any]:
+    return {
+        "role": settings.role,
+        "auto_sync": settings.auto_sync,
+        "language": settings.language,
+        "device_name": settings.device_name,
+        "favorites": settings.favorites,
+        "last_sync": settings.last_sync,
+        "device_id": identity.device_id(),
+    }
+
+
+@app.post("/settings")
+def update_settings(
+    role: str | None = None,
+    auto_sync: bool | None = None,
+    device_name: str | None = None,
+) -> dict[str, Any]:
+    if role is not None and role in ("master", "client"):
+        settings.role = role
+    if auto_sync is not None:
+        settings.auto_sync = auto_sync
+        if auto_sync:
+            sync_manager.start()
+        else:
+            sync_manager.stop()
+    if device_name is not None:
+        settings.device_name = device_name.strip()
+        discovery.set_device_name(settings.device_name or socket.gethostname())
+    settings.save()
+    return get_settings()
+
+
+@app.get("/favorites")
+def get_favorites() -> dict[str, Any]:
+    return {"favorites": settings.favorites}
+
+
+@app.post("/favorites/add")
+def add_favorite(path: str) -> dict[str, Any]:
+    storage.ensure_workspace()
+    db.ensure_file_record(path, created_at=__import__("datetime").datetime.utcnow().isoformat())
+    settings.add_favorite(path)
+    db.set_favorite(path, True)
+    return {"status": "added", "path": path}
+
+
+@app.post("/favorites/remove")
+def remove_favorite(path: str) -> dict[str, Any]:
+    settings.remove_favorite(path)
+    db.set_favorite(path, False)
+    return {"status": "removed", "path": path}
 
 
 @app.get("/notifications")

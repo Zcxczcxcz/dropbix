@@ -42,3 +42,10 @@ class ArchiveManager:
         if not ARCHIVE_DIR.exists():
             return []
         return [str(path.relative_to(ARCHIVE_DIR)).replace('\\', '/') for path in ARCHIVE_DIR.rglob('*') if path.is_file()]
+
+    def list_events(self, limit: int = 200) -> list[dict[str, str | None]]:
+        rows = self.db.fetchall(
+            "SELECT event_type, description, timestamp, details FROM events ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        return [dict(row) for row in rows]

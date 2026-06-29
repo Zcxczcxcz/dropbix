@@ -46,22 +46,22 @@ class ApiClient:
         return self._request("GET", "/pending", default={"pending": []})["pending"]
 
     def accept_proposal(self, proposal_id: int) -> dict[str, Any]:
-        return self._request("POST", "/proposal/accept", default={"status": "error"}, data={"proposal_id": proposal_id})
+        return self._request("POST", "/proposal/accept", default={"status": "error"}, params={"proposal_id": proposal_id})
 
     def reject_proposal(self, proposal_id: int) -> dict[str, Any]:
-        return self._request("POST", "/proposal/reject", default={"status": "error"}, data={"proposal_id": proposal_id})
+        return self._request("POST", "/proposal/reject", default={"status": "error"}, params={"proposal_id": proposal_id})
 
     def history(self) -> list[dict[str, Any]]:
         return self._request("GET", "/history", default={"history": []})["history"]
 
     def restore_version(self, version_id: int) -> dict[str, Any]:
-        return self._request("POST", "/version/restore", default={"status": "error"}, data={"version_id": version_id})
+        return self._request("POST", "/version/restore", default={"status": "error"}, params={"version_id": version_id})
 
     def list_trash(self) -> list[str]:
         return self._request("GET", "/trash", default={"trash": []})["trash"]
 
     def restore_trash(self, path: str) -> dict[str, Any]:
-        return self._request("POST", "/trash/restore", default={"status": "error"}, data={"path": path})
+        return self._request("POST", "/trash/restore", default={"status": "error"}, params={"path": path})
 
     def delete_file(self, path: str) -> dict[str, Any]:
         return self._request("DELETE", "/file", default={"status": "error"}, params={"path": path})
@@ -75,11 +75,45 @@ class ApiClient:
     def list_devices(self) -> list[dict[str, Any]]:
         return self._request("GET", "/devices", default={"devices": []})["devices"]
 
+    def scan_devices(self) -> dict[str, Any]:
+        return self._request("POST", "/devices/scan", default={"status": "error"})
+
+    def scan_status(self) -> dict[str, Any]:
+        return self._request("GET", "/devices/scan/status", default={"scanning": False})
+
+    def add_device(self, ip: str, name: str = "") -> dict[str, Any]:
+        return self._request("POST", "/devices/add", default={"status": "error"}, params={"ip": ip, "name": name})
+
+    def remove_device(self, device_id: str) -> dict[str, Any]:
+        return self._request("DELETE", f"/devices/{device_id}", default={"status": "error"})
+
     def trust_device(self, device_id: str) -> dict[str, Any]:
-        return self._request("POST", "/devices/trust", default={"status": "error"}, data={"device_id": device_id})
+        return self._request("POST", "/devices/trust", default={"status": "error"}, params={"device_id": device_id})
 
     def untrust_device(self, device_id: str) -> dict[str, Any]:
-        return self._request("POST", "/devices/untrust", default={"status": "error"}, data={"device_id": device_id})
+        return self._request("POST", "/devices/untrust", default={"status": "error"}, params={"device_id": device_id})
+
+    def get_settings(self) -> dict[str, Any]:
+        return self._request("GET", "/settings", default={})
+
+    def update_settings(self, role: str | None = None, auto_sync: bool | None = None, device_name: str | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if role is not None:
+            params["role"] = role
+        if auto_sync is not None:
+            params["auto_sync"] = auto_sync
+        if device_name is not None:
+            params["device_name"] = device_name
+        return self._request("POST", "/settings", default={}, params=params)
+
+    def list_favorites(self) -> list[str]:
+        return self._request("GET", "/favorites", default={"favorites": []})["favorites"]
+
+    def add_favorite(self, path: str) -> dict[str, Any]:
+        return self._request("POST", "/favorites/add", default={"status": "error"}, params={"path": path})
+
+    def remove_favorite(self, path: str) -> dict[str, Any]:
+        return self._request("POST", "/favorites/remove", default={"status": "error"}, params={"path": path})
 
     def manual_sync(self) -> dict[str, Any]:
         return self._request("POST", "/sync/manual", default={"status": "error"})
